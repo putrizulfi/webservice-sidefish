@@ -1,7 +1,8 @@
 import csv
-from flask import Flask, request, jsonify
+from flask import Flask, request, jsonify, Response
 from flask_restx import Resource, Api, reqparse
 from flask_sqlalchemy import SQLAlchemy
+import torch
 from ultralytics import YOLO
 from werkzeug.security import generate_password_hash, check_password_hash
 from datetime import datetime, timedelta
@@ -353,71 +354,128 @@ class EditUser(Resource):
 ##### BEGIN: REALTIME ####
 ################################
 
-# Load the YOLO model
-model = YOLO("C:/Users/Admin/anaconda3/capstone_uas/model/best.pt")
+# # Load the YOLO model
+# model = YOLO("C:/Users/Admin/anaconda3/capstone_uas/model/best.pt")
 
-threshold = 0.5
-class_name_dict = {0: 'Segar', 1: 'Tidak Segar'}
+# threshold = 0.5
+# class_name_dict = {0: 'Segar', 1: 'Tidak Segar'}
 
-# Record prediction results to a text file
-def record_prediction(class_label):
-    timestamp = datetime.now().strftime("%Y-%m-%d %H:%M:%S")
-    with open("prediction_results.csv", "a", newline='') as file:
-        writer = csv.writer(file)
-        writer.writerow([timestamp, class_label])
+# # Record prediction results to a text file
+# def record_prediction(class_label):
+#     timestamp = datetime.now().strftime("%Y-%m-%d %H:%M:%S")
+#     with open("prediction_results.csv", "a", newline='') as file:
+#         writer = csv.writer(file)
+#         writer.writerow([timestamp, class_label])
 
-@app.route('/realtime')
-def video_realtime():
-    cap = cv2.VideoCapture(0)  # use default camera
-    if not cap.isOpened():
-        raise IOError("Cannot open webcam")
+# @app.route('/realtime')
+# def video_realtime():
+#     cap = cv2.VideoCapture(0)  # use default camera
+#     if not cap.isOpened():
+#         raise IOError("Cannot open webcam")
+
+#     while True:
+#         ret, frame = cap.read()
+#         if not ret:
+#             break
+
+#         H, W, _ = frame.shape
+
+#         results = model(frame)[0]
+
+#         for result in results.boxes.data.tolist():
+#             x1, y1, x2, y2, score, class_id = result
+
+#             if score > threshold:
+#                 if class_id == 0:
+#                     class_label = 'Segar'
+#                     cv2.rectangle(frame, (int(x1), int(y1)), (int(x2), int(y2)), (0, 0, 255), 4)
+#                     cv2.putText (frame, class_label.upper(), (int(x1), int(y1 - 10)),
+#                                 cv2.FONT_HERSHEY_SIMPLEX, 1.3, (0, 0, 255), 3, cv2.LINE_AA)
+#                 else:
+#                         class_label = 'Tidak Segar'
+#                         cv2.rectangle(frame, (int(x1), int(y1)), (int(x2), int(y2)), (0, 255, 0), 4)
+#                         cv2.putText(frame, class_label.upper(), (int(x1), int(y1 - 10)),
+#                                     cv2.FONT_HERSHEY_SIMPLEX, 1.3, (0, 255, 0), 3, cv2.LINE_AA)
+                    
+#                 record_prediction(class_label)
+
+#         # Add timestamp
+#         timestamp = datetime.now().strftime("%Y-%m-%d %H:%M:%S")
+#         cv2.putText(frame, timestamp, (10, 30), cv2.FONT_HERSHEY_SIMPLEX, 1, (0, 0, 255), 2)
+
+#         cv2.imshow('Real-time Detection', frame)
+
+#         if cv2.waitKey(1) & 0xFF == ord('q'):
+#             break
+
+#     cap.release()
+#     cv2.destroyAllWindows()
+
+# def record_prediction(class_label):
+#     timestamp = datetime.now().strftime("%Y-%m-%d %H:%M:%S")
+#     with open("prediction_results.csv", "a") as file:
+#         file.write(f"{timestamp} - Prediction: {class_label}\n")
+
+# ##################################
+# ##### END: REALTIME ####
+# ################################
+from PIL import Image
+
+import cv2
+
+def detect_objects():
+    # Load the YOLOv5 model with .pt weights
+    model = torch.hub.load('ultralytics/yolov5', 'custom', path='model/best.pt', force_reload=True)
+
+    # Open camera
+    cap = cv2.VideoCapture(0, cv2.CAP_MSMF)
 
     while True:
+        # Read frame from the camera
         ret, frame = cap.read()
-        if not ret:
+
+        if ret:
+            frame = cv2.flip(frame, 1)
+
+            # Convert frame to PIL Image
+            image = Image.fromarray(cv2.cvtColor(frame, cv2.COLOR_BGR2RGB))
+            
+            # Perform inference on the image
+            results = model(image)
+
+            # Get detection results
+            pred_boxes = results.xyxy[0]
+
+            # Draw bounding boxes and labels on the frame
+            for *xyxy, conf, cls in pred_boxes:
+                x1, y1, x2, y2 = map(int, xyxy)
+                label = f'{model.names[int(cls)]} {conf:.2f}'
+                cv2.rectangle(frame, (x1, y1), (x2, y2), (255, 0, 0), 2)
+                cv2.putText(frame, label, (x1, y1 - 10), cv2.FONT_HERSHEY_SIMPLEX, 0.9, (255, 0, 0), 2)
+                
+            # Convert the frame back to BGR format
+            frame = cv2.cvtColor(frame, cv2.COLOR_RGB2BGR)
+
+            # Encode the frame as JPEG
+            ret, buffer = cv2.imencode('.jpg', frame)
+
+            if not ret:
+                continue
+
+            # Yield the frame as a byte array
+            yield b'--frame\r\nContent-Type: image/jpeg\r\n\r\n' + buffer.tobytes() + b'\r\n'
+
+        else:
             break
 
-        H, W, _ = frame.shape
-
-        results = model(frame)[0]
-
-        for result in results.boxes.data.tolist():
-            x1, y1, x2, y2, score, class_id = result
-
-            if score > threshold:
-                if class_id == 0:
-                    class_label = 'Segar'
-                    cv2.rectangle(frame, (int(x1), int(y1)), (int(x2), int(y2)), (0, 0, 255), 4)
-                    cv2.putText (frame, class_label.upper(), (int(x1), int(y1 - 10)),
-                                cv2.FONT_HERSHEY_SIMPLEX, 1.3, (0, 0, 255), 3, cv2.LINE_AA)
-                else:
-                        class_label = 'Tidak Segar'
-                        cv2.rectangle(frame, (int(x1), int(y1)), (int(x2), int(y2)), (0, 255, 0), 4)
-                        cv2.putText(frame, class_label.upper(), (int(x1), int(y1 - 10)),
-                                    cv2.FONT_HERSHEY_SIMPLEX, 1.3, (0, 255, 0), 3, cv2.LINE_AA)
-                    
-                record_prediction(class_label)
-
-        # Add timestamp
-        timestamp = datetime.now().strftime("%Y-%m-%d %H:%M:%S")
-        cv2.putText(frame, timestamp, (10, 30), cv2.FONT_HERSHEY_SIMPLEX, 1, (0, 0, 255), 2)
-
-        cv2.imshow('Real-time Detection', frame)
-
-        if cv2.waitKey(1) & 0xFF == ord('q'):
-            break
-
+    # Release the camera and clean up
     cap.release()
-    cv2.destroyAllWindows()
 
-def record_prediction(class_label):
-    timestamp = datetime.now().strftime("%Y-%m-%d %H:%M:%S")
-    with open("prediction_results.csv", "a") as file:
-        file.write(f"{timestamp} - Prediction: {class_label}\n")
+    
 
-##################################
-##### END: REALTIME ####
-################################
+@app.route('/video_feed')
+def video_feed():
+    return Response(detect_objects(), mimetype='multipart/x-mixed-replace; boundary=frame')
 
 
 if __name__ == '__main__':
